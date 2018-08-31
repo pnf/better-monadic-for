@@ -1,10 +1,15 @@
 package com.olegpy.bm4
 
+import applicativish.TupleLifter
+import applicativish.TupleLifters.BogusOption
+
 import scala.tools.nsc
 import nsc.Global
 import nsc.plugins.Plugin
 import nsc.plugins.PluginComponent
 import nsc.transform.{Transform, TypingTransformers}
+import scala.reflect.internal.{Definitions, Flags}
+import scala.tools.nsc.typechecker.{Analyzer, Implicits}
 
 
 class BetterMonadicFor(val global: Global) extends Plugin {
@@ -12,9 +17,10 @@ class BetterMonadicFor(val global: Global) extends Plugin {
   val description = "Remove withFilter / partial matches in for-comprehension"
   val components =
     new ForRewriter(this, global) ::
-    new MapRemover(this, global) ::
-    new TupleRemover(this, global) ::
-    Nil
+      new MapRemover(this, global) ::
+      new TupleRemover(this, global) ::
+      new ApplicativeSimulator(this, global) ::
+      Nil
 
   var noUncheckedFilter = true
   var noMapIdentity     = true
@@ -149,4 +155,114 @@ class TupleRemover(plugin: BetterMonadicFor, val global: Global)
         super.transform(tree)
     }
   }
+}
+
+class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
+  extends PluginComponent with Transform with TypingTransformers with Analyzer with Implicits {
+  import global._
+
+  val tupleLifterClassConstructor = rootMirror.getRequiredClass("applicativish.TupleLifter")
+
+  override protected def newTransformer(unit: global.CompilationUnit): global.Transformer = new ApplicatizingTransformer(unit)
+
+  val tupleClass = rootMirror.requiredClass[Tuple2[_,_]].tpe
+
+  override val phaseName: String = "bm4-applicatizer"
+  override val runsAfter: List[String] = "typer" :: Nil
+
+  class ApplicatizingTransformer(unit: CompilationUnit)
+    extends TypingTransformer(unit) {
+
+    override def transform(tree: Tree): Tree = tree match {
+
+      case Apply(ta1@TypeApply(fm1@Select(vm, nme.flatMap), fmType1 :: Nil),
+      (Function(vValDef :: Nil, Apply(TypeApply(fm2@Select(wm, nme.flatMap), fmType2 :: Nil), Function(wValDef :: Nil, expr_u) :: Nil))) :: Nil)
+        if vm.tpe.typeArgs.size == 1 && wm.tpe.typeArgs.size == 1 &&
+          (vm.tpe.typeConstructor == wm.tpe.typeConstructor) &&
+          !wm.exists(vValDef.symbol == _.symbol) ⇒ {
+
+        val ctxt = localTyper.context
+
+        val mTpe: Type = vm.tpe.typeConstructor
+
+        val tt = tq"$tupleLifterClassConstructor[$mTpe]"
+
+        val tlc = tupleLifterClassConstructor
+
+        val lifterType = appliedType(tlc, vm.tpe.typeConstructor :: Nil)
+
+        val lt2 = typeOf[TupleLifter[Option]]
+        val lt3 = typeOf[TupleLifter[BogusOption]]
+
+        val a = analyzer
+
+        val ctx = localTyper.context1.asInstanceOf[a.Context]
+
+        val implSearch = a.inferImplicitByType(lifterType, ctx, tree.pos)
+        val implSearch2 = a.inferImplicitByType(lt2, ctx, tree.pos)
+        val implSearch3 = a.inferImplicitByType(lt3, ctx, tree.pos)
+
+        val testTupledTree = q"(null.asInstanceOf[${vm.tpe}], null.asInstanceOf[${wm.tpe}]).tupled"
+        val attempt = scala.util.Try { ctx.withImplicitsEnabled(localTyper.typedPos(tree.pos)(testTupledTree))}
+
+        println(attempt, lt2, lt3, implSearch2, implSearch3)
+
+        if(implSearch.isFailure)
+          super.transform(tree)
+        else {
+
+          val  tupleLifterObj = implSearch.tree
+
+          val expr = transform(expr_u)
+
+
+          val vt: global.Type = vm.tpe.typeArgs.head
+          val wt: global.Type = wm.tpe.typeArgs.head
+
+          /*
+          // Look for a way to convert (M[X],M[Y]) to M[(X,Y]]
+          val tupleLifterType = appliedType(tupleLifterClassConstructor, wm.tpe.typeConstructor)
+          val ctxt = localTyper.context.asInstanceOf[Context]
+          val tupleLifterSearch = inferImplicitFor(tupleLifterType, EmptyTree, ctxt, true)
+          if (tupleLifterSearch.isFailure)
+            reporter.info(vm.pos, "Can't find implicit tuple lifter", true)
+          val tupleLifterObj = tupleLifterSearch.tree
+          */
+
+          // (M[X], M[Y]]
+          val tupleOfMs: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vm.tpe :: wm.tpe :: Nil)
+          val tupleOfXY: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vt :: wt :: Nil)
+          val mOfTuple: Type = TypeRef(NoPrefix, vm.tpe.typeConstructor.typeSymbol, tupleOfXY :: Nil)
+          val tupleOfXYtt: global.Tree = tq"($vt,$wt)"
+
+
+          val vwArgName = global.internal.reificationSupport.freshTermName("x$")
+          val vwArgDef = ValDef(Modifiers(Flags.SYNTHETIC | Flags.PARAM), vwArgName, tupleOfXYtt, EmptyTree)
+          // vwArgSym.setInfo(tupleOfXY)
+          val newExpr = Block(
+            ValDef(vValDef.symbol, q"$vwArgName._1"), // at this point, they still have the wrong owners
+            ValDef(wValDef.symbol, q"$vwArgName._2"),
+            expr)
+
+          val newQual = q"$tupleLifterObj.tupleLift[$vt,$wt](($vm,$wm))"
+          // newQual.setType(mOfTuple)
+
+          val f3 = Function(vwArgDef :: Nil, newExpr)
+
+          val ret = Apply(TypeApply(Select(newQual, nme.flatMap), fmType2 :: Nil), f3 :: Nil)
+
+          val rett = localTyper.typedPos(tree.pos)(ret)
+          newExpr.changeOwner((vValDef.symbol.owner, f3.symbol), (wValDef.symbol.owner, f3.symbol))
+
+          rett
+        }
+      }
+
+
+      case _ ⇒ super.transform(tree)
+
+    }
+
+  }
+
 }

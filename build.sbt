@@ -1,11 +1,11 @@
 name := "better-monadic-for"
 organization := "com.olegpy"
-version := "0.2.4"
+version := "0.2.5-PNF-SNAPSHOT"
 licenses += ("MIT", url("http://opensource.org/licenses/MIT"))
 homepage := Some(url("http://github.com/oleg-py/better-monadic-for"))
 
-scalaVersion := "2.12.5"
-crossScalaVersions := Seq("2.11.12", "2.12.5")
+scalaVersion := "2.12.6"
+crossScalaVersions := Seq("2.11.12", "2.12.5", "2.12.6")
 libraryDependencies ++= Seq(
   scalaOrganization.value % "scala-compiler" % scalaVersion.value,
   "org.scalatest" %% "scalatest" % "3.0.5" % Test,
@@ -24,7 +24,7 @@ javaOptions in Test ++= Seq(
 
 scalacOptions in Test ++= {
   val jar = (packageBin in Compile).value
-  Seq(s"-Xplugin:${jar.getAbsolutePath}", s"-Jdummy=${jar.lastModified}") // ensures recompile
+  Seq(s"-Xplugin:${jar.getAbsolutePath}", s"-Jdummy=${jar.lastModified}" , "-Xlog-implicits" ,"-Xlog-implicit-conversions") // ensures recompile
 }
 
 

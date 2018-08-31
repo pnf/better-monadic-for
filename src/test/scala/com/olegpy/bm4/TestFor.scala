@@ -1,8 +1,10 @@
 package com.olegpy.bm4
 
+import applicativish.TupleLifter
+import applicativish.TupleLifters._
+
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
-
 import cats.effect.IO
 import monix.execution.Scheduler.Implicits.global
 import monix.eval.Task
@@ -10,8 +12,65 @@ import cats.implicits._
 import org.scalatest.{FreeSpec, FunSuite}
 
 
+object StupidImplicits {
+
+  implicit def toFunnyTupled[A, M[_] <: Option[_]](t: (M[A], M[A])) = new {
+    def tupled: Option[(Int,Int)] = t match {
+      case (Some(a: Int), Some(b: Int)) ⇒ Some(a*10, b*10)
+      case _ ⇒ None
+    }
+  }
+
+}
+
 
 class TestFor extends FreeSpec {
+
+  import com.olegpy.bm4.StupidImplicits._
+
+  val xxx = implicitly[TupleLifter[Option]]
+  val yyy= implicitly[TupleLifter[BogusOption]]
+
+  val ljsfljfds = 2
+
+/*
+  class IntOptionWithTupled[A, M[_] <: Option[_]](t: (M[A], M[A])) {
+    def tupled: Option[(Int,Int)] = t match {
+      case (Some(a: Int), Some(b: Int)) ⇒ Some(a*10, b*10)
+      case _ ⇒ None
+    }
+  }
+
+  */
+  (Some(2),Some(3)).tupled
+
+  (null.asInstanceOf[Option[Int]], null.asInstanceOf[Option[Int]]).tupled
+
+
+  val scuz = for {
+    a ← Option(1)
+    b ← Option(2)
+    c ← Option(3)
+  } yield a + b + c
+  println(scuz)
+
+
+  val x = for {
+    a ← BogusOption(1)
+    b ← BogusOption(2)
+    c ← BogusOption(3)
+  } yield a+b+c
+
+  println(x)
+
+
+  val y = scala.Some.apply[Int](1)
+    .flatMap[Int](( (a: Int) =>
+                    scala.Some.apply[Int](2).flatMap[Int]((
+                       (b: Int) => scala.Some.apply[Int](a.+(b)).map[Int](((c: Int) => c))))))
+
+  println(y)
+
   "Plugin allows" - {
     "destructuring for monads without withFilter" in {
       val task = for {
