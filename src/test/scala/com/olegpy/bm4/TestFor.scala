@@ -1,8 +1,6 @@
 package com.olegpy.bm4
 
 import applicativish.TupleLifter
-import applicativish.TupleLifters._
-
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
 import cats.effect.IO
@@ -12,64 +10,33 @@ import cats.implicits._
 import org.scalatest.{FreeSpec, FunSuite}
 
 
-object StupidImplicits {
+object TestApplicativish {
 
-  implicit def toFunnyTupled[A, M[_] <: Option[_]](t: (M[A], M[A])) = new {
-    def tupled: Option[(Int,Int)] = t match {
-      case (Some(a: Int), Some(b: Int)) ⇒ Some(a*10, b*10)
-      case _ ⇒ None
+  val sbtnudge = 23
+
+  // For some reason, the implicit is only discovered by the plugin if defined in the object scope rather
+  // than imported.
+
+  implicit object OptionTupleLifter extends TupleLifter[Option] {
+    override def tupleLift[A, B](t: (Option[A], Option[B])): Option[(A, B)] = t match {
+      case (Some(a: Int), Some(b: Int)) ⇒ Some((10 * a, 10 * b)).asInstanceOf[Option[(A, B)]]
+      case _ ⇒ t._1.flatMap( a ⇒ t._2.map(b ⇒ (a,b)))
     }
   }
 
-}
+  implicitly[TupleLifter[Option]]
 
-
-class TestFor extends FreeSpec {
-
-  import com.olegpy.bm4.StupidImplicits._
-
-  val xxx = implicitly[TupleLifter[Option]]
-  val yyy= implicitly[TupleLifter[BogusOption]]
-
-  val ljsfljfds = 2
-
-/*
-  class IntOptionWithTupled[A, M[_] <: Option[_]](t: (M[A], M[A])) {
-    def tupled: Option[(Int,Int)] = t match {
-      case (Some(a: Int), Some(b: Int)) ⇒ Some(a*10, b*10)
-      case _ ⇒ None
-    }
-  }
-
-  */
-  (Some(2),Some(3)).tupled
-
-  (null.asInstanceOf[Option[Int]], null.asInstanceOf[Option[Int]]).tupled
-
-
-  val scuz = for {
+  def scuz = for {
     a ← Option(1)
     b ← Option(2)
     c ← Option(3)
   } yield a + b + c
-  println(scuz)
 
+}
 
-  val x = for {
-    a ← BogusOption(1)
-    b ← BogusOption(2)
-    c ← BogusOption(3)
-  } yield a+b+c
+class TestFor extends FreeSpec {
 
-  println(x)
-
-
-  val y = scala.Some.apply[Int](1)
-    .flatMap[Int](( (a: Int) =>
-                    scala.Some.apply[Int](2).flatMap[Int]((
-                       (b: Int) => scala.Some.apply[Int](a.+(b)).map[Int](((c: Int) => c))))))
-
-  println(y)
+  assert(TestApplicativish.scuz == Some(33))
 
   "Plugin allows" - {
     "destructuring for monads without withFilter" in {

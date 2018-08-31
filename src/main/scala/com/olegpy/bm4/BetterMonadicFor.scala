@@ -1,8 +1,5 @@
 package com.olegpy.bm4
 
-import applicativish.TupleLifter
-import applicativish.TupleLifters.BogusOption
-
 import scala.tools.nsc
 import nsc.Global
 import nsc.plugins.Plugin
@@ -158,7 +155,7 @@ class TupleRemover(plugin: BetterMonadicFor, val global: Global)
 }
 
 class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
-  extends PluginComponent with Transform with TypingTransformers with Analyzer with Implicits {
+  extends PluginComponent with Transform with TypingTransformers  {
   import global._
 
   val tupleLifterClassConstructor = rootMirror.getRequiredClass("applicativish.TupleLifter")
@@ -171,7 +168,7 @@ class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
   override val runsAfter: List[String] = "typer" :: Nil
 
   class ApplicatizingTransformer(unit: CompilationUnit)
-    extends TypingTransformer(unit) {
+    extends TypingTransformer(unit)  {
 
     override def transform(tree: Tree): Tree = tree match {
 
@@ -191,21 +188,16 @@ class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
 
         val lifterType = appliedType(tlc, vm.tpe.typeConstructor :: Nil)
 
-        val lt2 = typeOf[TupleLifter[Option]]
-        val lt3 = typeOf[TupleLifter[BogusOption]]
+        val a = analyzer  // keep local for debugging
 
-        val a = analyzer
+        localTyper.context.owner.info
 
-        val ctx = localTyper.context1.asInstanceOf[a.Context]
+        val ctx = localTyper.context.asInstanceOf[a.Context]
 
-        val implSearch = a.inferImplicitByType(lifterType, ctx, tree.pos)
-        val implSearch2 = a.inferImplicitByType(lt2, ctx, tree.pos)
-        val implSearch3 = a.inferImplicitByType(lt3, ctx, tree.pos)
 
-        val testTupledTree = q"(null.asInstanceOf[${vm.tpe}], null.asInstanceOf[${wm.tpe}]).tupled"
-        val attempt = scala.util.Try { ctx.withImplicitsEnabled(localTyper.typedPos(tree.pos)(testTupledTree))}
+        val implSearch =  a.inferImplicitByTypeSilent(lifterType, ctx, tree.pos)
 
-        println(attempt, lt2, lt3, implSearch2, implSearch3)
+        reporter.info(tree.pos, s"implied search for $lifterType => $implSearch", true)
 
         if(implSearch.isFailure)
           super.transform(tree)
@@ -250,14 +242,12 @@ class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
           val f3 = Function(vwArgDef :: Nil, newExpr)
 
           val ret = Apply(TypeApply(Select(newQual, nme.flatMap), fmType2 :: Nil), f3 :: Nil)
-
           val rett = localTyper.typedPos(tree.pos)(ret)
           newExpr.changeOwner((vValDef.symbol.owner, f3.symbol), (wValDef.symbol.owner, f3.symbol))
 
           rett
         }
       }
-
 
       case _ ⇒ super.transform(tree)
 
