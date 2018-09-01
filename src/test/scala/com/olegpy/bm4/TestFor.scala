@@ -12,7 +12,7 @@ import org.scalatest.{FreeSpec, FunSuite}
 
 object TestApplicativish {
 
-  val sbtnudge = 23
+  val sbtnudge = 2
 
   // For some reason, the implicit is only discovered by the plugin if defined in the object scope rather
   // than imported.
@@ -32,11 +32,13 @@ object TestApplicativish {
     c ← Option(3)
   } yield a + b + c
 
+
+
 }
 
 class TestFor extends FreeSpec {
 
-  assert(TestApplicativish.scuz == Some(33))
+  assert(TestApplicativish.scuz == Some(51))
 
   "Plugin allows" - {
     "destructuring for monads without withFilter" in {

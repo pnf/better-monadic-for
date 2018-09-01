@@ -170,87 +170,92 @@ class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
   class ApplicatizingTransformer(unit: CompilationUnit)
     extends TypingTransformer(unit)  {
 
-    override def transform(tree: Tree): Tree = tree match {
 
-      case Apply(ta1@TypeApply(fm1@Select(vm, nme.flatMap), fmType1 :: Nil),
-      (Function(vValDef :: Nil, Apply(TypeApply(fm2@Select(wm, nme.flatMap), fmType2 :: Nil), Function(wValDef :: Nil, expr_u) :: Nil))) :: Nil)
-        if vm.tpe.typeArgs.size == 1 && wm.tpe.typeArgs.size == 1 &&
-          (vm.tpe.typeConstructor == wm.tpe.typeConstructor) &&
-          !wm.exists(vValDef.symbol == _.symbol) ⇒ {
-
-        val ctxt = localTyper.context
-
-        val mTpe: Type = vm.tpe.typeConstructor
-
-        val tt = tq"$tupleLifterClassConstructor[$mTpe]"
-
-        val tlc = tupleLifterClassConstructor
-
-        val lifterType = appliedType(tlc, vm.tpe.typeConstructor :: Nil)
-
-        val a = analyzer  // keep local for debugging
-
-        localTyper.context.owner.info
-
-        val ctx = localTyper.context.asInstanceOf[a.Context]
+    def inferLifter(tree: Tree, vm: Tree): analyzer.SearchResult = {
+      val ctxt = localTyper.context
+      val mTpe: Type = vm.tpe.typeConstructor
+      val tt = tq"$tupleLifterClassConstructor[$mTpe]"
+      val tlc = tupleLifterClassConstructor
+      val lifterType = appliedType(tlc, vm.tpe.typeConstructor :: Nil)
+      localTyper.context.owner.info
+      val ctx = localTyper.context.asInstanceOf[analyzer.Context]
+      val implSearch =  analyzer.inferImplicitByTypeSilent(lifterType, ctx, tree.pos)
+      reporter.info(tree.pos, s"implied search for $lifterType => $implSearch", true)
+      implSearch
+    }
 
 
-        val implSearch =  a.inferImplicitByTypeSilent(lifterType, ctx, tree.pos)
-
-        reporter.info(tree.pos, s"implied search for $lifterType => $implSearch", true)
-
-        if(implSearch.isFailure)
-          super.transform(tree)
-        else {
-
-          val  tupleLifterObj = implSearch.tree
-
-          val expr = transform(expr_u)
+    private object PossiblyNestedMap {
+      def unapply(tree: global.Tree): Option[global.Tree] = tree match {
 
 
-          val vt: global.Type = vm.tpe.typeArgs.head
-          val wt: global.Type = wm.tpe.typeArgs.head
+        case Apply(TypeApply(Select(vm, nme.flatMap), fmType1),
+        (Function(vValDef :: Nil,
 
-          /*
-          // Look for a way to convert (M[X],M[Y]) to M[(X,Y]]
-          val tupleLifterType = appliedType(tupleLifterClassConstructor, wm.tpe.typeConstructor)
-          val ctxt = localTyper.context.asInstanceOf[Context]
-          val tupleLifterSearch = inferImplicitFor(tupleLifterType, EmptyTree, ctxt, true)
-          if (tupleLifterSearch.isFailure)
-            reporter.info(vm.pos, "Can't find implicit tuple lifter", true)
-          val tupleLifterObj = tupleLifterSearch.tree
-          */
+        PossiblyNestedMap(Apply(TypeApply(Select(wm, comb), fmType2),
+        Function(wValDef :: Nil, expr_u) :: Nil))
 
-          // (M[X], M[Y]]
-          val tupleOfMs: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vm.tpe :: wm.tpe :: Nil)
-          val tupleOfXY: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vt :: wt :: Nil)
-          val mOfTuple: Type = TypeRef(NoPrefix, vm.tpe.typeConstructor.typeSymbol, tupleOfXY :: Nil)
-          val tupleOfXYtt: global.Tree = tq"($vt,$wt)"
+        )) :: Nil)
+          if (comb == nme.flatMap || comb == nme.map) &&
+            vm.tpe.typeArgs.size == 1 && wm.tpe.typeArgs.size == 1 &&
+            (vm.tpe.typeConstructor == wm.tpe.typeConstructor) &&
+            !wm.exists(vValDef.symbol == _.symbol) ⇒
+
+          val implSearch = inferLifter(tree, vm)
+
+          if(implSearch.isFailure)
+            Some(ApplicatizingTransformer.super.transform(tree))
+          else {
+
+            val tupleLifterObj = implSearch.tree
+
+            val expr = transform(expr_u)
 
 
-          val vwArgName = global.internal.reificationSupport.freshTermName("x$")
-          val vwArgDef = ValDef(Modifiers(Flags.SYNTHETIC | Flags.PARAM), vwArgName, tupleOfXYtt, EmptyTree)
-          // vwArgSym.setInfo(tupleOfXY)
-          val newExpr = Block(
-            ValDef(vValDef.symbol, q"$vwArgName._1"), // at this point, they still have the wrong owners
-            ValDef(wValDef.symbol, q"$vwArgName._2"),
-            expr)
+            val vt: global.Type = vm.tpe.typeArgs.head
+            val wt: global.Type = wm.tpe.typeArgs.head
 
-          val newQual = q"$tupleLifterObj.tupleLift[$vt,$wt](($vm,$wm))"
-          // newQual.setType(mOfTuple)
+            // (M[X], M[Y]]
+            val tupleOfXY: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vt :: wt :: Nil)
+            val tupleOfXYtt: global.Tree = tq"($vt,$wt)"
 
-          val f3 = Function(vwArgDef :: Nil, newExpr)
 
-          val ret = Apply(TypeApply(Select(newQual, nme.flatMap), fmType2 :: Nil), f3 :: Nil)
-          val rett = localTyper.typedPos(tree.pos)(ret)
-          newExpr.changeOwner((vValDef.symbol.owner, f3.symbol), (wValDef.symbol.owner, f3.symbol))
+            val vwArgName = global.internal.reificationSupport.freshTermName("x$")
+            val vwArgDef = ValDef(Modifiers(Flags.SYNTHETIC | Flags.PARAM), vwArgName, tupleOfXYtt, EmptyTree)
+            val newExpr = Block(
+              ValDef(vValDef.symbol, q"$vwArgName._1"), // at this point, they still have the wrong owners
+              ValDef(wValDef.symbol, q"$vwArgName._2"),
+              expr)
 
-          rett
-        }
+            val newQual = q"$tupleLifterObj.tupleLift[$vt,$wt](($vm,$wm))"
+
+            val f3 = Function(vwArgDef :: Nil, newExpr)
+
+            val ret = Apply(TypeApply(Select(newQual, comb), fmType2), f3 :: Nil)
+            val rett = localTyper.typedPos(tree.pos)(ret)
+            newExpr.changeOwner((vValDef.symbol.owner, f3.symbol), (wValDef.symbol.owner, f3.symbol))
+
+            rett
+
+            Some(rett)
+          }
+
+        // Boring map.  Not nested.
+        case Apply(TypeApply(Select(wm, comb), fmType2),
+        Function(wValDef :: Nil, expr_u) :: Nil) ⇒
+          Some(ApplicatizingTransformer.super.transform(tree))
+
+        case t ⇒
+          None
+
+
       }
 
-      case _ ⇒ super.transform(tree)
+    }
 
+    override def transform(tree: Tree): Tree = tree match {
+      case PossiblyNestedMap(xformed) ⇒ xformed
+      case _ ⇒ super.transform(tree)
     }
 
   }
