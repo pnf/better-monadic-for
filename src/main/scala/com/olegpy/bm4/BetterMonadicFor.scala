@@ -12,23 +12,27 @@ import scala.tools.nsc.typechecker.{Analyzer, Implicits}
 class BetterMonadicFor(val global: Global) extends Plugin {
   val name = "bm4"
   val description = "Remove withFilter / partial matches in for-comprehension"
+
   val components =
     new ForRewriter(this, global) ::
       new MapRemover(this, global) ::
       new TupleRemover(this, global) ::
-      new ApplicativeSimulator(this, global) ::
+      new TupleLifter(this, global) ::
       Nil
 
   var noUncheckedFilter = true
   var noMapIdentity     = true
   var noTupling         = true
+  var liftTuples        = true
+  var verboseTupleLifting = false
 
   val knobs = Map(
     "no-filtering" -> "Remove .withFilter from generator desugaring",
     "no-map-id"    -> "Optimize .map(x => x) and .map(_ => ())",
-    "no-tupling"   -> "Not implemented yet"
+    "no-tupling"   -> "Not implemented yet",
+    "lift-tuples"  → "Lift nested maps into single map over tuples",
+    "verbose-tuple-lifting" → "extra verbosity attempting to lift tuples"
   )
-
 
   override val optionsHelp: Option[String] = Some(
     knobs
@@ -64,9 +68,11 @@ class BetterMonadicFor(val global: Global) extends Plugin {
       case "no-filtering" => noUncheckedFilter = toBoolean(value)
       case "no-map-id"    => noMapIdentity     = toBoolean(value)
       case "no-tupling"   => noTupling         = toBoolean(value)
+      case "lift-tuples"  ⇒ liftTuples         = toBoolean(value)
+      case "verbose-tuple-lifting" ⇒ verboseTupleLifting = toBoolean(value)
     }
 
-    noUncheckedFilter || noMapIdentity || noTupling
+    noUncheckedFilter || noMapIdentity || noTupling || liftTuples
   }
 }
 
@@ -154,110 +160,3 @@ class TupleRemover(plugin: BetterMonadicFor, val global: Global)
   }
 }
 
-class ApplicativeSimulator(plugin: BetterMonadicFor, val global: Global)
-  extends PluginComponent with Transform with TypingTransformers  {
-  import global._
-
-  val tupleLifterClassConstructor = rootMirror.getRequiredClass("applicativish.TupleLifter")
-
-  override protected def newTransformer(unit: global.CompilationUnit): global.Transformer = new ApplicatizingTransformer(unit)
-
-  val tupleClass = rootMirror.requiredClass[Tuple2[_,_]].tpe
-
-  override val phaseName: String = "bm4-applicatizer"
-  override val runsAfter: List[String] = "typer" :: Nil
-
-  class ApplicatizingTransformer(unit: CompilationUnit)
-    extends TypingTransformer(unit)  {
-
-
-    def inferLifter(tree: Tree, vm: Tree): analyzer.SearchResult = {
-      val ctxt = localTyper.context
-      val mTpe: Type = vm.tpe.typeConstructor
-      val tt = tq"$tupleLifterClassConstructor[$mTpe]"
-      val tlc = tupleLifterClassConstructor
-      val lifterType = appliedType(tlc, vm.tpe.typeConstructor :: Nil)
-      localTyper.context.owner.info
-      val ctx = localTyper.context.asInstanceOf[analyzer.Context]
-      val implSearch =  analyzer.inferImplicitByTypeSilent(lifterType, ctx, tree.pos)
-      reporter.info(tree.pos, s"implied search for $lifterType => $implSearch", true)
-      implSearch
-    }
-
-
-    private object PossiblyNestedMap {
-      def unapply(tree: global.Tree): Option[global.Tree] = tree match {
-
-
-        case Apply(TypeApply(Select(vm, nme.flatMap), fmType1),
-        (Function(vValDef :: Nil,
-
-        PossiblyNestedMap(Apply(TypeApply(Select(wm, comb), fmType2),
-        Function(wValDef :: Nil, expr_u) :: Nil))
-
-        )) :: Nil)
-          if (comb == nme.flatMap || comb == nme.map) &&
-            vm.tpe.typeArgs.size == 1 && wm.tpe.typeArgs.size == 1 &&
-            (vm.tpe.typeConstructor == wm.tpe.typeConstructor) &&
-            !wm.exists(vValDef.symbol == _.symbol) ⇒
-
-          val implSearch = inferLifter(tree, vm)
-
-          if(implSearch.isFailure)
-            Some(ApplicatizingTransformer.super.transform(tree))
-          else {
-
-            val tupleLifterObj = implSearch.tree
-
-            val expr = transform(expr_u)
-
-
-            val vt: global.Type = vm.tpe.typeArgs.head
-            val wt: global.Type = wm.tpe.typeArgs.head
-
-            // (M[X], M[Y]]
-            val tupleOfXY: Type = TypeRef(NoPrefix, typeOf[Tuple2[_, _]].typeSymbol, vt :: wt :: Nil)
-            val tupleOfXYtt: global.Tree = tq"($vt,$wt)"
-
-
-            val vwArgName = global.internal.reificationSupport.freshTermName("x$")
-            val vwArgDef = ValDef(Modifiers(Flags.SYNTHETIC | Flags.PARAM), vwArgName, tupleOfXYtt, EmptyTree)
-            val newExpr = Block(
-              ValDef(vValDef.symbol, q"$vwArgName._1"), // at this point, they still have the wrong owners
-              ValDef(wValDef.symbol, q"$vwArgName._2"),
-              expr)
-
-            val newQual = q"$tupleLifterObj.tupleLift[$vt,$wt](($vm,$wm))"
-
-            val f3 = Function(vwArgDef :: Nil, newExpr)
-
-            val ret = Apply(TypeApply(Select(newQual, comb), fmType2), f3 :: Nil)
-            val rett = localTyper.typedPos(tree.pos)(ret)
-            newExpr.changeOwner((vValDef.symbol.owner, f3.symbol), (wValDef.symbol.owner, f3.symbol))
-
-            rett
-
-            Some(rett)
-          }
-
-        // Boring map.  Not nested.
-        case Apply(TypeApply(Select(wm, comb), fmType2),
-        Function(wValDef :: Nil, expr_u) :: Nil) ⇒
-          Some(ApplicatizingTransformer.super.transform(tree))
-
-        case t ⇒
-          None
-
-
-      }
-
-    }
-
-    override def transform(tree: Tree): Tree = tree match {
-      case PossiblyNestedMap(xformed) ⇒ xformed
-      case _ ⇒ super.transform(tree)
-    }
-
-  }
-
-}

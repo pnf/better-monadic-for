@@ -1,6 +1,7 @@
 package com.olegpy.bm4
 
-import applicativish.TupleLifter
+import applicativish.TupleLiftable
+
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
 import cats.effect.IO
@@ -8,23 +9,33 @@ import monix.execution.Scheduler.Implicits.global
 import monix.eval.Task
 import cats.implicits._
 import org.scalatest.{FreeSpec, FunSuite}
+import scala.languageFeature.experimental.macros
 
+import TupleLifterImplicits._
+
+object TestApplicativish2 {
+  import applicativish.TupleLiftable.liftTuples
+  import TupleLifterImplicits.OptionTupleLifter
+
+  def scuz = liftTuples { for {
+    a ← Option(1)
+    b ← Option(2)
+    c ← Option(3)
+  } yield a + b + c }
+
+
+
+}
 
 object TestApplicativish {
 
-  val sbtnudge = 2
+  val sbtnudge = 3
 
   // For some reason, the implicit is only discovered by the plugin if defined in the object scope rather
   // than imported.
 
-  implicit object OptionTupleLifter extends TupleLifter[Option] {
-    override def tupleLift[A, B](t: (Option[A], Option[B])): Option[(A, B)] = t match {
-      case (Some(a: Int), Some(b: Int)) ⇒ Some((10 * a, 10 * b)).asInstanceOf[Option[(A, B)]]
-      case _ ⇒ t._1.flatMap( a ⇒ t._2.map(b ⇒ (a,b)))
-    }
-  }
 
-  implicitly[TupleLifter[Option]]
+  implicit val fooey = implicitly[TupleLiftable[Option]]
 
   def scuz = for {
     a ← Option(1)
@@ -39,6 +50,7 @@ object TestApplicativish {
 class TestFor extends FreeSpec {
 
   assert(TestApplicativish.scuz == Some(51))
+  assert(TestApplicativish2.scuz == Some(51))
 
   "Plugin allows" - {
     "destructuring for monads without withFilter" in {

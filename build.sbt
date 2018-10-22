@@ -24,9 +24,10 @@ javaOptions in Test ++= Seq(
 
 scalacOptions in Test ++= {
   val jar = (packageBin in Compile).value
-  Seq(s"-Xplugin:${jar.getAbsolutePath}", s"-Jdummy=${jar.lastModified}" , "-Xlog-implicits" ,"-Xlog-implicit-conversions") // ensures recompile
+  Seq(s"-Xplugin:${jar.getAbsolutePath}", s"-Jdummy=${jar.lastModified}") // ensures recompile
 }
 
 
 //scalacOptions in Test += "-Xfatal-warnings"
-scalacOptions in Test += "-Ywarn-unused:locals"
+//scalacOptions in Test += "-Ywarn-unused:locals"
+scalacOptions in Test += "-P:bm4:verbose-tuple-lifting:true"
